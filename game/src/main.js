@@ -1,17 +1,17 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The game
-// moves between four screens: title, play, paused and game over.
+// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s
+// steps, and the renderer paints what is there. The game moves between title, play, paused,
+// wasted, busted and story-complete screens; the save lives in localStorage.
 //
-// ?seed=N fixes the falling pattern. ?shot=start|play|end (with &seed=N) stages that scene
+// ?seed=N fixes the city. ?shot=start|play|chase|end (with &seed=N) stages that scene
 // instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, LIVES, STEP } from './config.js';
+import { STEP } from './config.js';
 import { createRandom } from './random.js';
-import { createWorld, EVENT_HIT, EVENT_OVER } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+import { createSound } from './audio.js';
+import { createGame } from './world.js';
+import { createRenderer } from './render.js';
+import { ACTION_CONFIRM, ACTION_ENTER, ACTION_PAUSE, ACTION_RELOAD, createInput } from './input.js';
 import { stageShot } from './shots.js';
 
-/** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
 const MAX_FRAME = 0.25;
 
 const params = new URLSearchParams(window.location.search);
@@ -21,112 +21,249 @@ const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() 
 
 const canvas = document.getElementById('game');
 const status = document.getElementById('status');
-const world = createWorld(createRandom(seed));
-const renderer = createRenderer(canvas);
+const sound = createSound();
+const game = createGame(createRandom(seed));
+const renderer = createRenderer(game);
+const input = createInput(canvas, {
+  unlockAudio() {
+    sound.unlock();
+  },
+  orbit(dx, dy) {
+    renderer.addYaw(-dx * 0.005);
+    renderer.addPitch(dy * 0.004);
+  },
+  zoom(direction) {
+    renderer.addZoom(direction * 1.5);
+  },
+});
 
-function readBest() {
-  try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
-  } catch {
-    return 0;
-  }
+function announce(message) {
+  status.textContent = message;
 }
 
-function saveBest(value) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
-  }
+function updateSoundButton() {
+  const btn = document.getElementById('btn-sound');
+  btn.textContent = sound.muted ? 'Sound: off' : 'Sound: on';
+}
+
+function startPlaying() {
+  sound.unlock();
+  sound.startMusic();
+  renderer.clearFixed();
+  renderer.snapCamera();
+  renderer.showScreen(null);
+  announce('Playing. Follow the mission on the screen.');
+}
+
+function quitToTitle() {
+  game.saveGame();
+  game.state.mode = 'title';
+  renderer.showScreen('title');
+  document.getElementById('btn-continue').classList.toggle('hidden', !game.saveData);
+  announce('Sunshine Bay. Press New game or Continue.');
 }
 
 function runShot(name) {
-  const scene = stageShot(name, world);
+  const scene = stageShot(name, game, renderer);
   let painted = 0;
   function paint() {
-    renderer.draw(world.state, scene.screen, scene.best);
+    renderer.draw(STEP);
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
     else window.__shotReady = true;
   }
+  announce(`Sunshine Bay screenshot: ${scene.screen}.`);
   requestAnimationFrame(paint);
 }
 
 function runGame() {
-  const input = createInput(canvas);
-  let screen = SCREEN_TITLE;
-  let best = readBest();
+  let lastMode = 'title';
   let accumulator = 0;
   let last = performance.now();
 
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
-  function announce(message) {
-    status.textContent = message;
-  }
+  document.getElementById('btn-new').addEventListener('click', () => {
+    sound.click();
+    game.newGame();
+    startPlaying();
+  });
+  document.getElementById('btn-continue').addEventListener('click', () => {
+    sound.click();
+    game.continueGame();
+    startPlaying();
+  });
+  document.getElementById('btn-sound').addEventListener('click', () => {
+    sound.unlock();
+    sound.setMuted(!sound.muted);
+    updateSoundButton();
+  });
+  document.getElementById('btn-resume').addEventListener('click', () => {
+    sound.click();
+    game.state.mode = 'play';
+    startPlaying();
+  });
+  document.getElementById('btn-restart').addEventListener('click', () => {
+    sound.click();
+    game.newGame();
+    startPlaying();
+  });
+  document.getElementById('btn-quit').addEventListener('click', () => {
+    sound.click();
+    quitToTitle();
+  });
+  document.getElementById('btn-retry').addEventListener('click', () => {
+    sound.click();
+    game.resetToMissionStart();
+    startPlaying();
+  });
+  document.getElementById('btn-retry2').addEventListener('click', () => {
+    sound.click();
+    game.resetToMissionStart();
+    startPlaying();
+  });
+  document.getElementById('btn-quit2').addEventListener('click', () => {
+    sound.click();
+    quitToTitle();
+  });
+  document.getElementById('btn-quit3').addEventListener('click', () => {
+    sound.click();
+    quitToTitle();
+  });
+  document.getElementById('btn-again').addEventListener('click', () => {
+    sound.click();
+    game.newGame();
+    startPlaying();
+  });
+  document.getElementById('btn-quit4').addEventListener('click', () => {
+    sound.click();
+    quitToTitle();
+  });
 
-  function startGame() {
-    world.reset();
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    announce(`Playing. ${LIVES} lives.`);
-  }
+  document.getElementById('btn-continue').classList.toggle('hidden', !game.saveData);
+  updateSoundButton();
+  renderer.showScreen('title');
+  announce('Sunshine Bay. Press New game or Continue.');
 
-  function endGame() {
-    screen = SCREEN_OVER;
-    if (world.state.score > best) {
-      best = world.state.score;
-      saveBest(best);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && game.state.mode === 'play') {
+      game.saveGame();
+      game.state.mode = 'paused';
+      renderer.showScreen('paused');
+      announce('Paused.');
     }
-    announce(`Game over. Score ${world.state.score}. Best ${best}.`);
-  }
+  });
 
   function handleActions() {
     const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
-    else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
-      screen = SCREEN_PLAY;
-      announce('Playing.');
+    const mode = game.state.mode;
+    if (actions & ACTION_CONFIRM) {
+      if (mode === 'title') {
+        game.newGame();
+        startPlaying();
+      } else if (mode === 'paused') {
+        game.state.mode = 'play';
+        startPlaying();
+      } else if (mode === 'over' || mode === 'busted') {
+        game.resetToMissionStart();
+        startPlaying();
+      } else if (mode === 'complete') {
+        game.newGame();
+        startPlaying();
+      } else if (mode === 'play' && !game.player.onFoot) {
+        sound.click();
+      }
     }
+    if (actions & ACTION_PAUSE) {
+      if (mode === 'play') {
+        game.saveGame();
+        game.state.mode = 'paused';
+        renderer.showScreen('paused');
+        announce('Paused.');
+      } else if (mode === 'paused') {
+        game.state.mode = 'play';
+        startPlaying();
+      }
+    }
+    return actions;
   }
 
-  function step() {
-    if (screen === SCREEN_TITLE) {
-      world.step(STEP, 0, true);
-      return;
+  function drainEvents() {
+    for (const event of game.takeEvents()) {
+      if (event.kind === 'shot') sound.shot();
+      else if (event.kind === 'crash') sound.crash();
+      else if (event.kind === 'pickup') sound.pickup();
+      else if (event.kind === 'jingle') sound.jingle();
+      else if (event.kind === 'busted') sound.busted();
+      else if (event.kind === 'reload' || event.kind === 'horn') sound.click();
     }
-    const events = world.step(STEP, input.direction(), false);
-    if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_HIT) announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
   }
 
   function frame(now) {
     requestAnimationFrame(frame);
     accumulator += Math.min((now - last) / 1000, MAX_FRAME);
     last = now;
-    handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
+    const actions = handleActions();
+    const move = input.move();
+    const yaw = renderer.cameraYaw();
+    const fx = Math.sin(yaw) * move.f + Math.cos(yaw) * move.s;
+    const fz = Math.cos(yaw) * move.f - Math.sin(yaw) * move.s;
+    const len = Math.hypot(fx, fz);
+    const shootAt = input.takeShoot();
+    let aim = null;
+    if (shootAt) aim = renderer.screenToGround(shootAt.x, shootAt.y);
+    const worldInput = {
+      fx: len > 0.01 ? fx / len : 0,
+      fz: len > 0.01 ? fz / len : 0,
+      run: move.run,
+      throttle: move.f,
+      steer: -move.s,
+      handbrake: false,
+      enter: !!(actions & ACTION_ENTER),
+      shoot: !!aim,
+      aimX: aim ? aim.x : 0,
+      aimZ: aim ? aim.z : 0,
+      reload: !!(actions & ACTION_RELOAD),
+    };
+    if (game.state.mode === 'play') {
+      let first = true;
+      while (accumulator >= STEP) {
+        game.update(STEP, worldInput);
         accumulator -= STEP;
+        if (first) {
+          first = false;
+          worldInput.enter = false;
+          worldInput.shoot = false;
+          worldInput.reload = false;
+        }
+        if (game.state.mode !== 'play') {
+          accumulator = 0;
+          break;
+        }
       }
     } else {
       accumulator = 0;
     }
-    renderer.draw(world.state, screen, best);
+    drainEvents();
+    const mode = game.state.mode;
+    if (mode !== lastMode) {
+      if (mode === 'title') renderer.showScreen('title');
+      else if (mode === 'paused') renderer.showScreen('paused');
+      else if (mode === 'over') renderer.showScreen('over');
+      else if (mode === 'busted') renderer.showScreen('busted');
+      else if (mode === 'complete') {
+        const s = game.state.stats;
+        const acc = game.state.stats.shots > 0 ? Math.round((s.hits / s.shots) * 100) : 0;
+        document.getElementById('complete-stats').textContent =
+          `Cash: $${game.state.cash} · Missions done: ${s.missionsDone} · Cars stolen: ${s.stolen} · Shot accuracy: ${acc}%`;
+        renderer.showScreen('complete');
+      }
+      lastMode = mode;
+    }
+    const p = game.player;
+    sound.engine(mode === 'play' && !p.onFoot && p.car !== null, p.car ? Math.abs(p.car.speed) / 40 : 0);
+    sound.siren(mode === 'play' && game.state.wanted > 0);
+    renderer.draw(Math.min((now - last) / 1000, MAX_FRAME));
   }
 
-  // Leaving the tab pauses a running game rather than letting blocks fall unseen.
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    }
-  });
-
-  announce('Block Dodger. Press Space or click to start.');
   requestAnimationFrame(frame);
 }
 
